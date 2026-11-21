@@ -1,0 +1,14 @@
+name: Check Bot
+on: workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "TOKEN_START=${TELEGRAM_BOT_TOKEN:0:12}..."
+          echo "TOKEN_LEN=${#TELEGRAM_BOT_TOKEN}"
+          echo "CHANNEL=[$CHANNEL_ID]"
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
