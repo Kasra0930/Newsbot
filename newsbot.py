@@ -306,6 +306,7 @@ def build_messages(posts):
     return messages
 
 
+
 def send_message(text):
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -317,6 +318,22 @@ def send_message(text):
         },
         timeout=30
     )
+
+    try:
+        result = response.json()
+    except ValueError:
+        raise RuntimeError(
+            f"Invalid Telegram response: {response.text[:500]}"
+        )
+
+    if not response.ok or not result.get("ok"):
+        raise RuntimeError(
+            f"Telegram error {response.status_code}: "
+            f"{result.get('description', result)}"
+        )
+
+    return True
+
 
     response.raise_for_status()
 
