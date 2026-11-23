@@ -36,7 +36,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install feedparser requests
+          pip install -r requirements.txt
 
       - name: Run news bot
         env:
@@ -47,11 +47,13 @@ jobs:
       - name: Save persistent state
         if: always()
         run: |
-          if [ ! -f seen.json ]; then
-            echo '{"urls":[],"titles":[]}' > seen.json
+          if [ -f seen.json ]; then
+            cp seen.json /tmp/seen.json
+          else
+            echo '{"urls":[],"titles":[]}' > /tmp/seen.json
           fi
 
-          cp seen.json /tmp/seen.json
+          rm -f seen.json
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -64,7 +66,7 @@ jobs:
           fi
 
           cp /tmp/seen.json seen.json
-          git add seen.json
+          git add -f seen.json
 
           if ! git diff --cached --quiet; then
             git commit -m "Update persistent news state"
