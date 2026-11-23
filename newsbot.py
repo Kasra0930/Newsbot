@@ -717,12 +717,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-    posts = posts[:MAX_POSTS]
-
-    if not posts:
-        logging.info("No new technology news.")
-        return
-
     messages = build_messages(posts)
 
     for message, articles in messages:
