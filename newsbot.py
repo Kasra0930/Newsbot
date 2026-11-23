@@ -1,261 +1,214 @@
+
 import os
 import re
 import json
 import html
+import time
 import hashlib
 import logging
-import feedparser
 import requests
+import feedparser
 
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from urllib.parse import quote
 
+# ---------------- CONFIG ----------------
 
-# ==================================================
-# CONFIGURATION
-# ==================================================
-
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["CHANNEL_ID"]
-
-TZ = timezone(timedelta(hours=3, minutes=30))
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 STATE_FILE = "seen.json"
 
-MAX_POSTS = 10
+MAX_POSTS = 15
 MAX_MESSAGE_LENGTH = 3500
 MAX_HISTORY = 10000
+REQUEST_TIMEOUT = 25
 
-REQUEST_TIMEOUT = 30
+IRAN_TZ = timezone(timedelta(hours=3, minutes=30))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; DailyNewsBot/1.0)"
+})
 
-# ==================================================
-# RSS SOURCES
-# ==================================================
+# ---------------- RSS SOURCES ----------------
 
-FEEDS = [
-    "https://www.ithome.com/rss/",
-    "https://news.google.com/rss/search?q=%D9%87%D9%88%D8%B4+%D9%85%D8%B5%D8%B7%D9%86%D8%B9%DB%8C&hl=fa&gl=IR&ceid=IR:fa",
-    "https://www.theverge.com/rss/index.xml",
-    "https://techcrunch.com/feed/",
-    "https://feeds.arstechnica.com/arstechnica/index",
-    "https://hnrss.org/frontpage?points=150",
-    "https://www.bleepingcomputer.com/feed/",
-]
+FEEDS = {
+    "زومیت": "https://feeds.zoomit.ir/zoomit-it",
+    "دیجیاتو": "https://digiato.com/feed/",
+    "گیمفا": "https://gamefa.com/feed/",
+    "زومجی": "https://www.zoomg.ir/feed/",
+    "ویجیاتو": "https://vigiato.net/feed",
+    "BBC فارسی": "https://feeds.bbci.co.uk/persian/rss.xml",
 
+    "The Verge": "https://www.theverge.com/rss/index.xml",
+    "TechCrunch": "https://techcrunch.com/feed/",
+    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
+    "Hacker News": "https://hnrss.org/frontpage",
+    "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
 
-# ==================================================
-# CATEGORIES
-# ==================================================
+    "IGN": "https://feeds.feedburner.com/ign/all",
+    "PC Gamer": "https://www.pcgamer.com/rss/",
+    "GameSpot": "https://www.gamespot.com/feeds/news/",
+}
+
+# ---------------- CATEGORIES ----------------
 
 CATEGORIES = {
     "هوش مصنوعی": [
-        "ai", "artificial intelligence", "llm", "gpt",
-        "gemini", "claude", "openai", "anthropic",
-        "machine learning", "deep learning",
-        "هوش مصنوعی", "یادگیری ماشین", "مدل زبانی"
+        "هوش مصنوعی", "artificial intelligence", "openai",
+        "chatgpt", "gemini", "claude", "llm", "machine learning",
+        "deep learning", "ai model", "مدل زبانی"
+    ],
+
+    "گیمینگ": [
+        "بازی", "گیم", "گیمینگ", "گیمفا", "کنسول",
+        "playstation", "xbox", "nintendo", "steam",
+        "gaming", "game", "video game", "pc gamer",
+        "esports", "esport", "پابجی", "کالاف",
+        "fortnite", "minecraft", "elden ring"
     ],
 
     "برنامه‌نویسی": [
-        "python", "javascript", "github", "developer",
-        "software", "programming", "coding", "framework",
-        "برنامه‌نویسی", "کدنویسی", "توسعه‌دهنده", "نرم‌افزار"
-    ],
-
-    "سخت‌افزار": [
-        "nvidia", "gpu", "cpu", "chip", "processor",
-        "amd", "intel", "hardware", "semiconductor",
-        "چیپ", "پردازنده", "سخت‌افزار", "تراشه"
+        "python", "javascript", "programming", "developer",
+        "github", "software development", "coding",
+        "برنامه نویسی", "برنامه‌نویسی", "کدنویسی",
+        "زبان برنامه نویسی"
     ],
 
     "امنیت سایبری": [
-        "security", "hacking", "hack", "breach",
-        "malware", "ransomware", "vulnerability",
-        "cybersecurity", "exploit",
-        "امنیت", "هک", "بدافزار", "آسیب‌پذیری"
+        "cybersecurity", "security", "hacker",
+        "vulnerability", "malware", "ransomware",
+        "هک", "امنیت سایبری", "بدافزار",
+        "آسیب پذیری", "آسیب‌پذیری"
     ],
 
-    "استارتاپ و فناوری": [
-        "startup", "technology", "tech", "innovation",
-        "funding", "acquisition", "big tech",
-        "استارتاپ", "فناوری", "سرمایه‌گذاری"
+    "سخت‌افزار و گجت": [
+        "hardware", "gpu", "cpu", "nvidia", "amd",
+        "intel", "processor", "smartphone", "laptop",
+        "گوشی", "پردازنده", "کارت گرافیک",
+        "سخت افزار", "سخت‌افزار", "لپ تاپ"
     ],
 
     "ارز دیجیتال": [
-        "crypto", "bitcoin", "ethereum", "blockchain",
-        "web3", "cryptocurrency",
-        "کریپتو", "بیت کوین", "اتریوم", "بلاکچین"
+        "bitcoin", "ethereum", "crypto", "blockchain",
+        "cryptocurrency", "بیت کوین", "بیت‌کوین",
+        "اتریوم", "ارز دیجیتال", "بلاکچین"
+    ],
+
+    "استارتاپ و فناوری": [
+        "startup", "technology", "tech",
+        "google", "microsoft", "apple",
+        "استارتاپ", "فناوری", "تکنولوژی"
     ]
 }
 
+# ---------------- TEXT TOOLS ----------------
 
-# ==================================================
-# TEXT PROCESSING
-# ==================================================
+def clean_text(value):
+    if not value:
+        return ""
 
-def normalize(text):
-    text = html.unescape(text or "")
+    value = html.unescape(str(value))
+    value = re.sub(r"<script.*?</script>", "", value,
+                   flags=re.I | re.S)
+    value = re.sub(r"<style.*?</style>", "", value,
+                   flags=re.I | re.S)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value)
 
-    text = text.replace("ي", "ی")
-    text = text.replace("ك", "ک")
-    text = text.replace("\u200c", " ")
-
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip().lower()
+    return value.strip()
 
 
-def clean(text, limit=600):
-    text = html.unescape(text or "")
+def is_persian(text):
+    return bool(re.search(r"[\u0600-\u06FF]", text))
 
-    text = re.sub(
-        r"<(script|style).*?>.*?</\1>",
-        " ",
-        text,
-        flags=re.I | re.S
-    )
 
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
+def translate_to_persian(text):
+    text = clean_text(text)
 
-    return text.strip()[:limit]
+    if not text or is_persian(text):
+        return text
+
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+
+        response = SESSION.get(
+            url,
+            params={
+                "client": "gtx",
+                "sl": "auto",
+                "tl": "fa",
+                "dt": "t",
+                "q": text[:4000]
+            },
+            timeout=REQUEST_TIMEOUT
+        )
+
+        response.raise_for_status()
+        data = response.json()
+
+        translated = "".join(
+            part[0]
+            for part in data[0]
+            if part and part[0]
+        )
+
+        return translated.strip() or text
+
+    except Exception as error:
+        logging.warning("Translation failed: %s", error)
+        return text
 
 
 def make_hash(text):
     return hashlib.sha256(
-        normalize(text).encode("utf-8")
+        text.encode("utf-8")
     ).hexdigest()
 
 
-def normalize_url(url):
-    try:
-        parts = urlsplit(url.strip())
-
-        tracking = {
-            "utm_source",
-            "utm_medium",
-            "utm_campaign",
-            "utm_term",
-            "utm_content",
-            "fbclid",
-            "gclid",
-            "ref",
-            "source"
-        }
-
-        query = [
-            (key, value)
-            for key, value in parse_qsl(parts.query)
-            if key.lower() not in tracking
-        ]
-
-        return urlunsplit((
-            parts.scheme.lower(),
-            parts.netloc.lower(),
-            parts.path.rstrip("/"),
-            urlencode(query),
-            ""
-        ))
-
-    except Exception:
-        return url.strip()
-
-
-# ==================================================
-# CATEGORIZATION
-# ==================================================
-
-def categorize(text):
-    text = normalize(text)
-
-    scores = {}
-
-    for category, keywords in CATEGORIES.items():
-        score = 0
-
-        for keyword in keywords:
-            keyword = normalize(keyword)
-
-            if re.fullmatch(r"[a-z0-9 ]+", keyword):
-                pattern = r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])"
-
-                if re.search(pattern, text):
-                    score += 1
-            elif keyword in text:
-                score += 1
-
-        scores[category] = score
-
-    best = max(scores, key=scores.get)
-
-    if scores[best] == 0:
-        return None
-
-    return best
-
-
-# ==================================================
-# PERSISTENT STATE
-# ==================================================
+# ---------------- STATE MANAGEMENT ----------------
 
 def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {"urls": [], "titles": []}
+
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
 
-        if not isinstance(data, dict):
-            raise ValueError("Invalid state format")
+        if isinstance(data, dict):
+            return {
+                "urls": data.get("urls", []),
+                "titles": data.get("titles", [])
+            }
 
-        urls = data.get("urls", [])
-        titles = data.get("titles", [])
+    except Exception as error:
+        logging.error("State loading failed: %s", error)
 
-        if not isinstance(urls, list):
-            urls = []
-
-        if not isinstance(titles, list):
-            titles = []
-
-        return {
-            "urls": urls,
-            "titles": titles
-        }
-
-    except FileNotFoundError:
-        logging.warning("State file not found.")
-    except (json.JSONDecodeError, ValueError):
-        logging.warning("State file is invalid.")
-
-    return {
-        "urls": [],
-        "titles": []
-    }
+    return {"urls": [], "titles": []}
 
 
 def save_state(state):
-    state["urls"] = list(dict.fromkeys(state["urls"]))[-MAX_HISTORY:]
-    state["titles"] = list(dict.fromkeys(state["titles"]))[-MAX_HISTORY:]
+    state["urls"] = state["urls"][-MAX_HISTORY:]
+    state["titles"] = state["titles"][-MAX_HISTORY:]
 
-    temp_file = STATE_FILE + ".tmp"
+    temporary = STATE_FILE + ".tmp"
 
-    with open(temp_file, "w", encoding="utf-8") as file:
-        json.dump(
-            state,
-            file,
-            ensure_ascii=False,
-            indent=2
-        )
+    with open(temporary, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
 
-    os.replace(temp_file, STATE_FILE)
+    os.replace(temporary, STATE_FILE)
 
 
 def is_seen(state, url, title):
-    url_hash = make_hash(normalize_url(url))
-    title_hash = make_hash(title)
+    url_hash = make_hash(url) if url else ""
+    title_hash = make_hash(title.lower())
 
     return (
         url_hash in state["urls"]
@@ -263,186 +216,124 @@ def is_seen(state, url, title):
     )
 
 
-def mark_seen(state, articles):
-    for article in articles:
-        url_hash = make_hash(
-            normalize_url(article["url"])
-        )
+def mark_seen(state, url, title):
+    if url:
+        state["urls"].append(make_hash(url))
 
-        title_hash = make_hash(
-            article["title"]
-        )
-
-        state["urls"].append(url_hash)
-        state["titles"].append(title_hash)
-
-    state["urls"] = list(dict.fromkeys(state["urls"]))
-    state["titles"] = list(dict.fromkeys(state["titles"]))
+    state["titles"].append(make_hash(title.lower()))
 
 
-# ==================================================
-# RSS READER
-# ==================================================
+# ---------------- CATEGORY DETECTION ----------------
+
+def categorize(title, summary):
+    content = (title + " " + summary).lower()
+
+    for category, keywords in CATEGORIES.items():
+        for keyword in keywords:
+            if keyword.lower() in content:
+                return category
+
+    return "فناوری و اخبار عمومی"
+
+
+# ---------------- FETCH NEWS ----------------
 
 def fetch_news(state):
-    posts = []
+    articles = []
 
-    for feed_url in FEEDS:
-
+    for source, feed_url in FEEDS.items():
         try:
-            response = requests.get(
+            response = SESSION.get(
                 feed_url,
-                timeout=20,
-                headers={
-                    "User-Agent": "DailyNewsBot/1.0"
-                }
+                timeout=REQUEST_TIMEOUT
             )
-
             response.raise_for_status()
 
             feed = feedparser.parse(response.content)
 
-            if feed.bozo:
-                logging.warning(
-                    "RSS parsing warning: %s",
-                    feed_url
-                )
-
             logging.info(
                 "Feed loaded: %s | Entries: %s",
-                feed_url,
+                source,
                 len(feed.entries)
             )
 
-            for entry in feed.entries[:20]:
-
-                title = clean(
-                    entry.get("title", ""),
-                    200
+            for entry in feed.entries:
+                title = clean_text(entry.get("title", ""))
+                summary = clean_text(
+                    entry.get("summary", "")
+                    or entry.get("description", "")
                 )
 
-                link = entry.get("link", "")
+                url = entry.get("link", "").strip()
 
-                summary = clean(
-                    entry.get("summary", ""),
-                    600
-                )
-
-                if not title or not link:
+                if not title or not url:
                     continue
 
-                category = categorize(
-                    title + " " + summary
-                )
-
-                if category is None:
+                if is_seen(state, url, title):
                     continue
 
-                if is_seen(state, link, title):
-                    continue
-
-                posts.append({
+                articles.append({
+                    "source": source,
                     "title": title,
-                    "url": link,
-                    "summary": summary or "خلاصه‌ای در منبع موجود نیست.",
-                    "category": category
+                    "summary": summary,
+                    "url": url
                 })
 
-        except Exception:
-            logging.exception(
-                "Feed failed: %s",
-                feed_url
+        except Exception as error:
+            logging.error(
+                "Feed error %s: %s",
+                source,
+                error
             )
 
-    # Remove duplicate articles in current batch
+    logging.info("New articles found: %s", len(articles))
 
-    unique = {}
-
-    for post in posts:
-        key = make_hash(post["title"])
-
-        if key not in unique:
-            unique[key] = post
-
-    return list(unique.values())
+    return articles
 
 
-# ==================================================
-# TELEGRAM MESSAGE BUILDER
-# ==================================================
+# ---------------- MESSAGE BUILDER ----------------
 
-def build_messages(posts):
+def build_message(article):
+    title = translate_to_persian(article["title"])
 
-    header = (
-        "🧠 <b>آلبرت و انیشتاین | گزارش روز</b>\n"
-        f"📅 {datetime.now(TZ).strftime('%Y-%m-%d')}\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
+    summary = article["summary"]
+
+    if summary:
+        summary = translate_to_persian(summary)
+    else:
+        summary = "خلاصه‌ای از خبر در منبع اصلی قابل مشاهده است."
+
+    category = categorize(title, summary)
+
+    title = html.escape(title)
+    summary = html.escape(summary[:700])
+    source = html.escape(article["source"])
+    url = html.escape(article["url"], quote=True)
+
+    return (
+        f"📰 <b>{title}</b>\n\n"
+        f"{summary}\n\n"
+        f"🏷 <b>دسته:</b> {category}\n"
+        f"🌐 <b>منبع:</b> {source}\n"
+        f"🔗 <a href=\"{url}\">مشاهده خبر اصلی</a>\n"
+        f"\n"
+        f"<i>آلبرت و انیشتاین | گزارش روز</i>"
     )
 
-    messages = []
 
-    current_message = header
-    current_articles = []
+# ---------------- TELEGRAM ----------------
 
-    for post in posts:
+def send_message(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-        title = html.escape(post["title"])
-        category = html.escape(post["category"])
-        summary = html.escape(post["summary"])
-        link = html.escape(post["url"], quote=True)
-
-        item = (
-            f"📰 <b>{title}</b>\n"
-            f"🏷 {category}\n\n"
-            f"{summary}\n\n"
-            f"🔗 {link}\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-        )
-
-        if len(current_message) + len(item) > MAX_MESSAGE_LENGTH:
-
-            if current_articles:
-                messages.append((
-                    current_message,
-                    current_articles
-                ))
-
-            current_message = header
-            current_articles = []
-
-        current_message += item
-        current_articles.append(post)
-
-    if current_articles:
-        messages.append((
-            current_message,
-            current_articles
-        ))
-
-    return messages
-
-
-# ==================================================
-# TELEGRAM SENDER
-# ==================================================
-
-def send_message(text):
-
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{BOT_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-
-    response = requests.post(
+    response = SESSION.post(
         url,
-        json=payload,
+        data={
+            "chat_id": CHANNEL_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        },
         timeout=REQUEST_TIMEOUT
     )
 
@@ -453,112 +344,89 @@ def send_message(text):
 
     try:
         result = response.json()
-
     except ValueError:
-        raise RuntimeError(
-            "Telegram returned invalid JSON: "
-            + response.text[:1000]
-        )
-
-    # Print the actual Telegram error.
+        raise RuntimeError("Invalid Telegram response")
 
     if not response.ok or not result.get("ok"):
+        description = result.get("description", str(result))
 
-        description = result.get(
-            "description",
-            str(result)
-        )
+        logging.error("Telegram error: %s", description)
 
-        error_code = result.get(
-            "error_code",
-            response.status_code
-        )
-
-        logging.error(
-            "Telegram API error %s: %s",
-            error_code,
-            description
-        )
-
-        raise RuntimeError(
-            f"Telegram API error {error_code}: {description}"
-        )
-
-    logging.info("Telegram message sent successfully.")
+        raise RuntimeError(description)
 
     return True
 
 
-# ==================================================
-# MAIN
-# ==================================================
+# ---------------- MAIN ----------------
 
 def main():
-
-    state = load_state()
+    if not BOT_TOKEN or not CHANNEL_ID:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN or CHANNEL_ID is missing"
+        )
 
     logging.info("Starting Daily News...")
+
+    state = load_state()
 
     logging.info(
         "Previously stored URLs: %s",
         len(state["urls"])
     )
 
-    posts = fetch_news(state)
+    articles = fetch_news(state)
 
-    logging.info(
-        "New articles found: %s",
-        len(posts)
-    )
+    articles = articles[:MAX_POSTS]
 
-    posts = posts[:MAX_POSTS]
-
-    if not posts:
-        logging.info("No new technology news.")
+    if not articles:
+        logging.info("No new articles.")
         return
 
-    messages = build_messages(posts)
+    logging.info("Articles selected: %s", len(articles))
 
-    logging.info(
-        "Messages to send: %s",
-        len(messages)
-    )
+    sent_count = 0
 
-    for message, articles in messages:
-
+    for article in articles:
         try:
+            message = build_message(article)
+
+            if len(message) > MAX_MESSAGE_LENGTH:
+                message = message[:MAX_MESSAGE_LENGTH - 30]
+
             send_message(message)
 
-            # Save only after successful delivery.
+            mark_seen(
+                state,
+                article["url"],
+                article["title"]
+            )
 
-            mark_seen(state, articles)
             save_state(state)
 
+            sent_count += 1
+
             logging.info(
-                "Successfully sent %s articles.",
+                "Published %s/%s",
+                sent_count,
                 len(articles)
             )
 
-        except Exception:
+            time.sleep(1)
 
-            # Preserve state of previously delivered messages.
-
-            save_state(state)
-
-            logging.exception(
-                "Telegram delivery failed."
+        except Exception as error:
+            logging.error(
+                "Article delivery failed: %s",
+                error
             )
 
-            raise
+            # Continue with the next article.
+            continue
 
     logging.info(
-        "Daily News completed successfully."
+        "Daily News finished. Published: %s",
+        sent_count
     )
 
-
-# ==================================================
-# ENTRY POINT
-# ==================================================
 
 if __name__ == "__main__":
     main()
