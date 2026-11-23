@@ -1,0 +1,72 @@
+
+name: Daily News
+
+on:
+  schedule:
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore persistent state
+        run: |
+          if git fetch origin bot-state; then
+            git show FETCH_HEAD:seen.json > seen.json
+          else
+            echo '{"urls":[],"titles":[]}' > seen.json
+          fi
+
+      - name: Install dependencies
+        run: |
+          pip install feedparser requests
+
+      - name: Run news bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+        run: python newsbot.py
+
+      - name: Save persistent state
+        if: always()
+        run: |
+          if [ ! -f seen.json ]; then
+            echo '{"urls":[],"titles":[]}' > seen.json
+          fi
+
+          cp seen.json /tmp/seen.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git fetch origin bot-state; then
+            git checkout -B bot-state origin/bot-state
+          else
+            git checkout --orphan bot-state
+            git rm -rf . || true
+          fi
+
+          cp /tmp/seen.json seen.json
+          git add seen.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update persistent news state"
+            git push origin bot-state
+          fi
